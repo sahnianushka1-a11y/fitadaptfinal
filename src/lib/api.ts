@@ -1,3 +1,4 @@
+
 import type { GeneratedWorkout, OnboardingData } from '@/types';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8787';
@@ -10,6 +11,8 @@ export interface GenerateParams {
   soreness: string;
   energy: string;
   limitations: string;
+  coachLanguage: string;
+  coachPersonality: string;
 }
 
 function mapLevel(level: string): string {
@@ -47,6 +50,8 @@ export function paramsFromOnboarding(
     soreness: soreness.toLowerCase(),
     energy: energy.toLowerCase(),
     limitations: onboarding.limitations || onboarding.avoidMovements || '',
+    coachLanguage: onboarding.coachLanguage,
+    coachPersonality: onboarding.coachPersonality,
   };
 }
 
@@ -58,51 +63,84 @@ export interface WorkoutResponse {
 
 function looksLikeBackendShape(obj: unknown): obj is GeneratedWorkout {
   if (!obj || typeof obj !== 'object') return false;
+
   const o = obj as Record<string, unknown>;
+
   return (
     typeof o.title === 'string' &&
     typeof o.estimatedMinutes === 'number' &&
-    Array.isArray(o.exercises)
+    typeof o.intensity === 'string' &&
+    typeof o.whySelected === 'string' &&
+    Array.isArray(o.exercises) &&
+    typeof o.safetyNote === 'string'
   );
 }
 
 function extractWorkout(payload: unknown): GeneratedWorkout | null {
-  if (looksLikeBackendShape(payload)) return payload;
-  if (payload && typeof payload === 'object') {
-    const o = payload as Record<string, unknown>;
-    if (o.workout && looksLikeBackendShape(o.workout)) return o.workout;
-    if (o.data && looksLikeBackendShape(o.data)) return o.data;
+  if (!payload || typeof payload !== 'object') return null;
+
+  const o = payload as Record<string, unknown>;
+
+  if (looksLikeBackendShape(o)) return o as GeneratedWorkout;
+
+  if (o.workout && typeof o.workout === 'object' &&
+      looksLikeBackendShape(o.workout)) {
+    return o.workout;
   }
+
+  if (o.data && typeof o.data === 'object' &&
+      looksLikeBackendShape(o.data)) {
+    return o.data;
+  }
+
   return null;
 }
 
-export async function generateWorkout(params: GenerateParams): Promise<WorkoutResponse> {
+export async function generateWorkout(
+  params: GenerateParams
+): Promise<WorkoutResponse> {
   try {
     const res = await fetch(`${API_URL}/api/workout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: params }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(60000),
     });
 
     if (!res.ok) {
-      return { error: `The coach backend returned an error (${res.status}). Try again in a moment.` };
+      const result = await res.json().catch(() => ({}));
+      return {
+        error: result.error ||
+          `The coach backend returned an error (${res.status}). Try again.`,
+      };
     }
 
     const json = await res.json();
     const workout = extractWorkout(json);
+
     if (!workout) {
-      return { error: 'The backend responded, but the workout format was unexpected. Check your backend response shape.' };
+      return {
+        error: 'The backend returned an unexpected workout format.',
+      };
     }
+
     return { data: workout };
+
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    if (message.includes('timeout') || message.includes('abort')) {
-      return { offline: true, error: 'The request timed out. Your coach backend may be slow or not running.' };
+
+    if (message.toLowerCase().includes('timeout') ||
+        message.toLowerCase().includes('abort')) {
+      return {
+        offline: true,
+        error: 'The coach is taking too long. Please try again.',
+      };
     }
+
     return {
       offline: true,
-      error: 'Could not reach your workout backend. Make sure it is running and reachable.',
+      error: 'Could not reach your workout backend. Make sure it is running.',
     };
   }
 }
+
